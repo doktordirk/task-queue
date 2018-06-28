@@ -41,7 +41,7 @@
       "core-js": "^2.0.3"
     }
   },
-  "dependencies": {
+  "peerDependencies": {
     "aurelia-pal": "^1.0.0"
   },
   "devDependencies": {
