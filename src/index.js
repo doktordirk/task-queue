@@ -1,15 +1,18 @@
 import {DOM, FEATURE} from 'aurelia-pal';
 
-let hasSetImmediate = typeof setImmediate === 'function';
+const stackSeparator = '\nEnqueued in TaskQueue by:\n';
+const microStackSeparator = '\nEnqueued in MicroTaskQueue by:\n';
 
 function makeRequestFlushFromMutationObserver(flush) {
-  let toggle = 1;
   let observer = DOM.createMutationObserver(flush);
-  let node = DOM.createTextNode('');
+  let val = 'a';
+  let node = DOM.createTextNode('a');
+  let values = Object.create(null);
+  values.a = 'b';
+  values.b = 'a';
   observer.observe(node, {characterData: true});
   return function requestFlush() {
-    toggle = -toggle;
-    node.data = toggle;
+    node.data = val = values[val];
   };
 }
 
@@ -34,11 +37,17 @@ function makeRequestFlushFromTimer(flush) {
   };
 }
 
-function onError(error, task) {
+function onError(error, task, longStacks) {
+  if (longStacks &&
+      task.stack &&
+      typeof error === 'object' &&
+      error !== null) {
+    // Note: IE sets error.stack when throwing but does not override a defined .stack.
+    error.stack = filterFlushStack(error.stack) + task.stack;
+  }
+
   if ('onError' in task) {
     task.onError(error);
-  } else if (hasSetImmediate) {
-    setImmediate(() => { throw error; });
   } else {
     setTimeout(() => { throw error; }, 0);
   }
@@ -64,6 +73,11 @@ export class TaskQueue {
   flushing = false;
 
   /**
+   * Enables long stack traces for queued tasks.
+   */
+  longStacks = false;
+
+  /**
   * Creates an instance of TaskQueue.
   */
   constructor() {
@@ -81,59 +95,11 @@ export class TaskQueue {
   }
 
   /**
-  * Queues a task on the micro task queue for ASAP execution.
-  * @param task The task to queue up for ASAP execution.
+  * Immediately flushes the queue.
+  * @param queue The task queue or micro task queue
+  * @param capacity For periodically shift 1024 MicroTasks off the queue
   */
-  queueMicroTask(task: Task | Function): void {
-    if (this.microTaskQueue.length < 1) {
-      this.requestFlushMicroTaskQueue();
-    }
-
-    this.microTaskQueue.push(task);
-  }
-
-  /**
-  * Queues a task on the macro task queue for turn-based execution.
-  * @param task The task to queue up for turn-based execution.
-  */
-  queueTask(task: Task | Function): void {
-    if (this.taskQueue.length < 1) {
-      this.requestFlushTaskQueue();
-    }
-
-    this.taskQueue.push(task);
-  }
-
-  /**
-  * Immediately flushes the task queue.
-  */
-  flushTaskQueue(): void {
-    let queue = this.taskQueue;
-    let index = 0;
-    let task;
-
-    this.taskQueue = []; //recursive calls to queueTask should be scheduled after the next cycle
-
-    try {
-      this.flushing = true;
-      while (index < queue.length) {
-        task = queue[index];
-        task.call();
-        index++;
-      }
-    } catch (error) {
-      onError(error, task);
-    } finally {
-      this.flushing = false;
-    }
-  }
-
-  /**
-  * Immediately flushes the micro task queue.
-  */
-  flushMicroTaskQueue(): void {
-    let queue = this.microTaskQueue;
-    let capacity = this.microTaskQueueCapacity;
+  _flushQueue(queue, capacity): void {
     let index = 0;
     let task;
 
@@ -141,6 +107,9 @@ export class TaskQueue {
       this.flushing = true;
       while (index < queue.length) {
         task = queue[index];
+        if (this.longStacks) {
+          this.stack = typeof task.stack === 'string' ? task.stack : undefined;
+        }
         task.call();
         index++;
 
@@ -161,11 +130,108 @@ export class TaskQueue {
         }
       }
     } catch (error) {
-      onError(error, task);
+      onError(error, task, this.longStacks);
     } finally {
       this.flushing = false;
     }
+  }
 
+  /**
+  * Queues a task on the micro task queue for ASAP execution.
+  * @param task The task to queue up for ASAP execution.
+  */
+  queueMicroTask(task: Task | Function): void {
+    if (this.microTaskQueue.length < 1) {
+      this.requestFlushMicroTaskQueue();
+    }
+
+    if (this.longStacks) {
+      task.stack = this.prepareQueueStack(microStackSeparator);
+    }
+
+    this.microTaskQueue.push(task);
+  }
+
+  /**
+  * Queues a task on the macro task queue for turn-based execution.
+  * @param task The task to queue up for turn-based execution.
+  */
+  queueTask(task: Task | Function): void {
+    if (this.taskQueue.length < 1) {
+      this.requestFlushTaskQueue();
+    }
+
+    if (this.longStacks) {
+      task.stack = this.prepareQueueStack(stackSeparator);
+    }
+
+    this.taskQueue.push(task);
+  }
+
+  /**
+  * Immediately flushes the task queue.
+  */
+  flushTaskQueue(): void {
+    let queue = this.taskQueue;
+    this.taskQueue = []; //recursive calls to queueTask should be scheduled after the next cycle
+    this._flushQueue(queue, Number.MAX_VALUE);
+  }
+
+  /**
+  * Immediately flushes the micro task queue.
+  */
+  flushMicroTaskQueue(): void {
+    let queue = this.microTaskQueue;
+    this._flushQueue(queue, this.microTaskQueueCapacity);
     queue.length = 0;
   }
+
+  prepareQueueStack(separator) {
+    let stack = separator + filterQueueStack(captureStack());
+
+    if (typeof this.stack === 'string') {
+      stack = filterFlushStack(stack) + this.stack;
+    }
+
+    return stack;
+  }
+}
+
+function captureStack() {
+  let error = new Error();
+
+  // Firefox, Chrome, Edge all have .stack defined by now, IE has not.
+  if (error.stack) {
+    return error.stack;
+  }
+
+  try {
+    throw error;
+  } catch (e) {
+    return e.stack;
+  }
+}
+
+function filterQueueStack(stack) {
+  // Remove everything (error message + top stack frames) up to the topmost queueTask or queueMicroTask call
+  return stack.replace(/^[\s\S]*?\bqueue(Micro)?Task\b[^\n]*\n/, '');
+}
+
+function filterFlushStack(stack) {
+  // Remove bottom frames starting with the last flushTaskQueue or flushMicroTaskQueue
+  let index = stack.lastIndexOf('flushMicroTaskQueue');
+
+  if (index < 0) {
+    index = stack.lastIndexOf('flushTaskQueue');
+    if (index < 0) {
+      return stack;
+    }
+  }
+
+  index = stack.lastIndexOf('\n', index);
+
+  return index < 0 ? stack : stack.substr(0, index);
+  // The following would work but without regex support to match from end of string,
+  // it's hard to ensure we have the last occurence of "flushTaskQueue".
+  // return stack.replace(/\n[^\n]*?\bflush(Micro)?TaskQueue\b[\s\S]*$/, "");
 }

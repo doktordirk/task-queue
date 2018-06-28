@@ -1,3 +1,36 @@
+<a name="1.3.1"></a>
+## [1.3.1](https://github.com/aurelia/task-queue/compare/1.3.0...1.3.1) (2018-06-18)
+
+### Performance Improvements
+
+* Improved internal micro task queue flush initiation.
+
+<a name="1.3.0"></a>
+# [1.3.0](https://github.com/aurelia/task-queue/compare/1.2.1...1.3.0) (2018-05-08)
+
+### Bug Fixes
+
+* Removed setImmediate error handling code which was not compatible with Electron.
+
+<a name="1.2.1"></a>
+## [1.2.1](https://github.com/aurelia/task-queue/compare/1.2.0...v1.2.1) (2017-10-01)
+
+
+### Performance Improvements
+
+* **index:** remove capacity defined check ([ef6c4b8](https://github.com/aurelia/task-queue/commit/ef6c4b8))
+* Internal refactoring to reduce code duplication
+
+<a name="1.2.0"></a>
+# [1.2.0](https://github.com/aurelia/task-queue/compare/1.1.0...v1.2.0) (2017-02-21)
+
+
+### Features
+
+* **index:** provide public api for enabling long stack traces ([352f50b](https://github.com/aurelia/task-queue/commit/352f50b))
+
+
+
 <a name="1.1.0"></a>
 # [1.1.0](https://github.com/aurelia/task-queue/compare/1.0.0...v1.1.0) (2016-09-29)
 

@@ -3,18 +3,20 @@
 System.register(['aurelia-pal'], function (_export, _context) {
   "use strict";
 
-  var DOM, FEATURE, hasSetImmediate, TaskQueue;
+  var DOM, FEATURE, _typeof, stackSeparator, microStackSeparator, TaskQueue;
 
   
 
   function makeRequestFlushFromMutationObserver(flush) {
-    var toggle = 1;
     var observer = DOM.createMutationObserver(flush);
-    var node = DOM.createTextNode('');
+    var val = 'a';
+    var node = DOM.createTextNode('a');
+    var values = Object.create(null);
+    values.a = 'b';
+    values.b = 'a';
     observer.observe(node, { characterData: true });
     return function requestFlush() {
-      toggle = -toggle;
-      node.data = toggle;
+      node.data = val = values[val];
     };
   }
 
@@ -31,13 +33,13 @@ System.register(['aurelia-pal'], function (_export, _context) {
     };
   }
 
-  function onError(error, task) {
+  function onError(error, task, longStacks) {
+    if (longStacks && task.stack && (typeof error === 'undefined' ? 'undefined' : _typeof(error)) === 'object' && error !== null) {
+      error.stack = filterFlushStack(error.stack) + task.stack;
+    }
+
     if ('onError' in task) {
       task.onError(error);
-    } else if (hasSetImmediate) {
-      setImmediate(function () {
-        throw error;
-      });
     } else {
       setTimeout(function () {
         throw error;
@@ -45,13 +47,51 @@ System.register(['aurelia-pal'], function (_export, _context) {
     }
   }
 
+  function captureStack() {
+    var error = new Error();
+
+    if (error.stack) {
+      return error.stack;
+    }
+
+    try {
+      throw error;
+    } catch (e) {
+      return e.stack;
+    }
+  }
+
+  function filterQueueStack(stack) {
+    return stack.replace(/^[\s\S]*?\bqueue(Micro)?Task\b[^\n]*\n/, '');
+  }
+
+  function filterFlushStack(stack) {
+    var index = stack.lastIndexOf('flushMicroTaskQueue');
+
+    if (index < 0) {
+      index = stack.lastIndexOf('flushTaskQueue');
+      if (index < 0) {
+        return stack;
+      }
+    }
+
+    index = stack.lastIndexOf('\n', index);
+
+    return index < 0 ? stack : stack.substr(0, index);
+  }
   return {
     setters: [function (_aureliaPal) {
       DOM = _aureliaPal.DOM;
       FEATURE = _aureliaPal.FEATURE;
     }],
     execute: function () {
-      hasSetImmediate = typeof setImmediate === 'function';
+      _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) {
+        return typeof obj;
+      } : function (obj) {
+        return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj;
+      };
+      stackSeparator = '\nEnqueued in TaskQueue by:\n';
+      microStackSeparator = '\nEnqueued in MicroTaskQueue by:\n';
 
       _export('TaskQueue', TaskQueue = function () {
         function TaskQueue() {
@@ -60,6 +100,7 @@ System.register(['aurelia-pal'], function (_export, _context) {
           
 
           this.flushing = false;
+          this.longStacks = false;
 
           this.microTaskQueue = [];
           this.microTaskQueueCapacity = 1024;
@@ -80,46 +121,7 @@ System.register(['aurelia-pal'], function (_export, _context) {
           });
         }
 
-        TaskQueue.prototype.queueMicroTask = function queueMicroTask(task) {
-          if (this.microTaskQueue.length < 1) {
-            this.requestFlushMicroTaskQueue();
-          }
-
-          this.microTaskQueue.push(task);
-        };
-
-        TaskQueue.prototype.queueTask = function queueTask(task) {
-          if (this.taskQueue.length < 1) {
-            this.requestFlushTaskQueue();
-          }
-
-          this.taskQueue.push(task);
-        };
-
-        TaskQueue.prototype.flushTaskQueue = function flushTaskQueue() {
-          var queue = this.taskQueue;
-          var index = 0;
-          var task = void 0;
-
-          this.taskQueue = [];
-
-          try {
-            this.flushing = true;
-            while (index < queue.length) {
-              task = queue[index];
-              task.call();
-              index++;
-            }
-          } catch (error) {
-            onError(error, task);
-          } finally {
-            this.flushing = false;
-          }
-        };
-
-        TaskQueue.prototype.flushMicroTaskQueue = function flushMicroTaskQueue() {
-          var queue = this.microTaskQueue;
-          var capacity = this.microTaskQueueCapacity;
+        TaskQueue.prototype._flushQueue = function _flushQueue(queue, capacity) {
           var index = 0;
           var task = void 0;
 
@@ -127,6 +129,9 @@ System.register(['aurelia-pal'], function (_export, _context) {
             this.flushing = true;
             while (index < queue.length) {
               task = queue[index];
+              if (this.longStacks) {
+                this.stack = typeof task.stack === 'string' ? task.stack : undefined;
+              }
               task.call();
               index++;
 
@@ -140,12 +145,56 @@ System.register(['aurelia-pal'], function (_export, _context) {
               }
             }
           } catch (error) {
-            onError(error, task);
+            onError(error, task, this.longStacks);
           } finally {
             this.flushing = false;
           }
+        };
 
+        TaskQueue.prototype.queueMicroTask = function queueMicroTask(task) {
+          if (this.microTaskQueue.length < 1) {
+            this.requestFlushMicroTaskQueue();
+          }
+
+          if (this.longStacks) {
+            task.stack = this.prepareQueueStack(microStackSeparator);
+          }
+
+          this.microTaskQueue.push(task);
+        };
+
+        TaskQueue.prototype.queueTask = function queueTask(task) {
+          if (this.taskQueue.length < 1) {
+            this.requestFlushTaskQueue();
+          }
+
+          if (this.longStacks) {
+            task.stack = this.prepareQueueStack(stackSeparator);
+          }
+
+          this.taskQueue.push(task);
+        };
+
+        TaskQueue.prototype.flushTaskQueue = function flushTaskQueue() {
+          var queue = this.taskQueue;
+          this.taskQueue = [];
+          this._flushQueue(queue, Number.MAX_VALUE);
+        };
+
+        TaskQueue.prototype.flushMicroTaskQueue = function flushMicroTaskQueue() {
+          var queue = this.microTaskQueue;
+          this._flushQueue(queue, this.microTaskQueueCapacity);
           queue.length = 0;
+        };
+
+        TaskQueue.prototype.prepareQueueStack = function prepareQueueStack(separator) {
+          var stack = separator + filterQueueStack(captureStack());
+
+          if (typeof this.stack === 'string') {
+            stack = filterFlushStack(stack) + this.stack;
+          }
+
+          return stack;
         };
 
         return TaskQueue;
